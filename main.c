@@ -93,6 +93,35 @@ void fft(s16 *interleaved_samples, int number_of_samples, DFTResult *output) {
     }
 }
 
+// number_of_samples is the same as number_of_buckets produces by the algorithm
+double get_bar_value(DFTResult *results, int number_of_samples, int bar, int number_of_bars, bool logarithmic) {
+    // second half of buckets is mirror image (not to be used)
+    int valid_buckets = number_of_samples/2;
+
+    assert(number_of_bars < valid_buckets/2);
+    assert(bar < number_of_bars);
+
+    int accumulate_bars = valid_buckets / number_of_bars;
+    double value = 0;
+
+    int start, end;
+    if (logarithmic) {
+        start = (int)(valid_buckets * pow((double)bar / number_of_bars, 2.0));
+        end = (int)(valid_buckets * pow((double)(bar + 1) / number_of_bars, 2.0));
+    } else {
+        start = accumulate_bars * bar;
+        end = start + accumulate_bars;
+    }
+
+    for (int i = start; i < end; ++i) {
+        DFTResult result = results[i];
+        float amplitude = 2.0 * sqrt(result.real * result.real + result.imaginary * result.imaginary) / number_of_samples;
+        value += amplitude;
+    }
+
+    return value / accumulate_bars;
+}
+
 //
 // frequency of each bucket depends on the number of samples analyzed
 // for 1 second of audio, each bucket is 1hz, so we would need 20k buckets
@@ -100,8 +129,8 @@ void fft(s16 *interleaved_samples, int number_of_samples, DFTResult *output) {
 
 int main(int argc, char **argv) {
     InitAudioDevice();
-    InitWindow(800, 1200, "Fourier");
-    SetWindowState(FLAG_VSYNC_HINT | FLAG_WINDOW_RESIZABLE);
+    InitWindow(800, 800, "Fourier");
+    SetWindowState(FLAG_VSYNC_HINT);
 
     if (argc == 1) {
         printf("Specify path to the file to visualize.\n");
@@ -127,11 +156,9 @@ int main(int argc, char **argv) {
     char text[512];
     while (!WindowShouldClose()) {
         double elapsed = GetTime() - start_time;
-        if (elapsed >= 0) {
-            int current_sample = (int)(elapsed * SAMPLE_RATE);
-            int offset = current_sample * CHANNELS;
-            fft(samples + offset, number_of_samples, results);
-        }
+        int current_sample = (int)(elapsed * SAMPLE_RATE);
+        int offset = current_sample * CHANNELS;
+        fft(samples + offset, number_of_samples, results);
 
         BeginDrawing(); {
             ClearBackground(BLACK);
@@ -140,13 +167,21 @@ int main(int argc, char **argv) {
             sprintf(text, "%f seconds", elapsed);
             DrawText(text, 10, 10, 18, WHITE);
 
-            // second half of buckets is mirror image (not to be used)
-            for (int i = 0; i < number_of_samples/2; i++) {
-                DFTResult result = results[i];
-                float amplitude = 2.0 * sqrt(result.real * result.real + result.imaginary * result.imaginary) / number_of_samples;
+            int number_of_bars = 100;
 
-                float value = amplitude / 10;
-                DrawRectangle(i * 1, 1000 - value, 1, value, RED);
+            int offset = 10;
+            int size = 780;
+
+            // second half of buckets is mirror image (not to be used)
+            for (int i = 0; i < number_of_bars; i++) {
+                float value = get_bar_value(results, number_of_samples, i, number_of_bars, true);
+                Rectangle frame = {
+                    .x = offset + i * ((float)size / number_of_bars),
+                    .y = offset + size - fmin(size, fmax(1, value)),
+                    .width = ((float)size / number_of_bars),
+                    .height = fmin(size, fmax(1, value))
+                };
+                DrawRectangleRec(frame, RED);
             }
         } EndDrawing();
     }
