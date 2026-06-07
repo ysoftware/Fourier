@@ -6,126 +6,11 @@
 
 #include <raylib.h>
 
-typedef signed short s16;
+#define FFT_IMPLEMENTATION
+#include "fft.h"
 
 #define CHANNELS 2
 #define SAMPLE_RATE 44100
-
-typedef struct {
-    double real;
-    double imaginary;
-} DFTResult;
-
-// Cooley-Tukey
-void fft(s16 *interleaved_samples, int number_of_samples, DFTResult *output) {
-    assert((number_of_samples & (number_of_samples - 1)) == 0 && "number_of_samples must be a power of 2.");
-
-    // copy samples into output buffer as real values, imaginary = 0
-    for (int i = 0; i < number_of_samples; i++) {
-        output[i].real = (double)interleaved_samples[i * CHANNELS + 0];
-        output[i].imaginary = 0.0;
-    }
-
-    // compute log2(number_of_samples) — safe because we asserted power-of-two
-    int log2n = 0;
-    for (int i = number_of_samples; i > 1; i >>= 1) log2n++;
-
-    // bit-reversal permutation: reorder samples so the butterfly stages
-    // can work in-place. for example with 8 samples: index 1 (001) swaps
-    // with index 4 (100), index 3 (011) swaps with index 6 (110), etc.
-    // we only swap when reversed > i to avoid swapping back
-    for (int i = 0; i < number_of_samples; i++) {
-        int reversed = 0;
-        int index = i;
-        for (int bit = 0; bit < log2n; bit++) {
-            reversed = (reversed << 1) | (index & 1);
-            index >>= 1;
-        }
-        if (reversed > i) {
-            DFTResult temp   = output[i];
-            output[i]        = output[reversed];
-            output[reversed] = temp;
-        }
-    }
-
-    // butterfly stages: step doubles each time (2, 4, 8, ..., number_of_samples)
-    // each stage merges pairs of sub-transforms into larger ones
-    for (int step = 2; step <= number_of_samples; step *= 2) {
-
-        // base twiddle factor for this stage: e^(-2*PI*i / step)
-        // this is the rotation we apply to the odd element of each butterfly
-        double angle             = -2.0 * PI / step;
-        double twiddle_real      = cos(angle);
-        double twiddle_imaginary = sin(angle);
-
-        // walk through each sub-transform of size step in the array
-        for (int k = 0; k < number_of_samples; k += step) {
-
-            // current is the running twiddle, starts at e^0 = (1, 0)
-            // and gets multiplied by the base twiddle each inner iteration
-            double current_real      = 1.0;
-            double current_imaginary = 0.0;
-
-            // process each butterfly pair within this sub-transform
-            for (int j = 0; j < step / 2; j++) {
-                DFTResult even = output[k + j];
-                DFTResult odd  = output[k + j + step / 2];
-
-                // rotate the odd element by the current twiddle factor
-                double odd_rotated_real      = odd.real * current_real      - odd.imaginary * current_imaginary;
-                double odd_rotated_imaginary = odd.real * current_imaginary + odd.imaginary * current_real;
-
-                // butterfly: even+odd goes to top slot, even-odd to bottom slot
-                // this is the core reuse: one multiply, two outputs
-                output[k + j].real               = even.real + odd_rotated_real;
-                output[k + j].imaginary           = even.imaginary + odd_rotated_imaginary;
-                output[k + j + step / 2].real      = even.real - odd_rotated_real;
-                output[k + j + step / 2].imaginary = even.imaginary - odd_rotated_imaginary;
-
-                // advance the running twiddle by multiplying by base twiddle
-                // equivalent to e^(-2*PI*i*(j+1)/step) without calling cos/sin
-                double next_real      = current_real * twiddle_real      - current_imaginary * twiddle_imaginary;
-                double next_imaginary = current_real * twiddle_imaginary + current_imaginary * twiddle_real;
-                current_real      = next_real;
-                current_imaginary = next_imaginary;
-            }
-        }
-    }
-}
-
-// number_of_samples is the same as number_of_buckets produces by the algorithm
-double get_bar_value(DFTResult *results, int number_of_samples, int bar, int number_of_bars, bool logarithmic) {
-    // second half of buckets is mirror image (not to be used)
-    int valid_buckets = number_of_samples/2;
-
-    assert(number_of_bars < valid_buckets/2);
-    assert(bar < number_of_bars);
-
-    int accumulate_bars = valid_buckets / number_of_bars;
-    double value = 0;
-
-    int start, end;
-    if (logarithmic) {
-        start = (int)(valid_buckets * pow((double)bar / number_of_bars, 2.0));
-        end = (int)(valid_buckets * pow((double)(bar + 1) / number_of_bars, 2.0));
-    } else {
-        start = accumulate_bars * bar;
-        end = start + accumulate_bars;
-    }
-
-    for (int i = start; i < end; ++i) {
-        DFTResult result = results[i];
-        float amplitude = 2.0 * sqrt(result.real * result.real + result.imaginary * result.imaginary) / number_of_samples;
-        value += amplitude;
-    }
-
-    return value / accumulate_bars;
-}
-
-//
-// frequency of each bucket depends on the number of samples analyzed
-// for 1 second of audio, each bucket is 1hz, so we would need 20k buckets
-//
 
 int main(int argc, char **argv) {
     InitAudioDevice();
@@ -145,10 +30,10 @@ int main(int argc, char **argv) {
 
     WaveFormat(&wave, SAMPLE_RATE, 16, CHANNELS);
     Sound sound = LoadSoundFromWave(wave);
-    s16 *samples = (s16*)wave.data;
+    signed short *samples = (signed short*)wave.data;
 
     int number_of_samples = 8192; // also number of buckets
-    DFTResult *results = malloc(number_of_samples*sizeof(*results));
+    FFTValue *results = malloc(number_of_samples*sizeof(*results));
 
     double start_time = GetTime();
     PlaySound(sound);
@@ -158,26 +43,22 @@ int main(int argc, char **argv) {
         double elapsed = GetTime() - start_time;
         int current_sample = (int)(elapsed * SAMPLE_RATE);
         int offset = current_sample * CHANNELS;
-        fft(samples + offset, number_of_samples, results);
+
+        if (current_sample + number_of_samples > wave.frameCount) break;
+        fft_process(results, number_of_samples, CHANNELS, &samples[offset]);
+
+        int number_of_bars = 100;
+        int padding = 10;
+        int size = 780;
 
         BeginDrawing(); {
             ClearBackground(BLACK);
-            DrawFPS(700, 10);
 
-            sprintf(text, "%f seconds", elapsed);
-            DrawText(text, 10, 10, 18, WHITE);
-
-            int number_of_bars = 100;
-
-            int offset = 10;
-            int size = 780;
-
-            // second half of buckets is mirror image (not to be used)
             for (int i = 0; i < number_of_bars; i++) {
-                float value = get_bar_value(results, number_of_samples, i, number_of_bars, true);
+                float value = fft_get_bar_value(results, number_of_samples, i, number_of_bars, true);
                 Rectangle frame = {
-                    .x = offset + i * ((float)size / number_of_bars),
-                    .y = offset + size - fmin(size, fmax(1, value)),
+                    .x = padding + i * ((float)size / number_of_bars),
+                    .y = padding + size - fmin(size, fmax(1, value)),
                     .width = ((float)size / number_of_bars),
                     .height = fmin(size, fmax(1, value))
                 };
@@ -187,6 +68,7 @@ int main(int argc, char **argv) {
     }
 
     CloseAudioDevice();
+    CloseWindow();
 
     return 0;
 }
