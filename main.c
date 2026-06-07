@@ -3,33 +3,18 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
 #include <raylib.h>
 
 typedef signed short s16;
 
 #define CHANNELS 2
-#define SAMPLE_RATE 44000
+#define SAMPLE_RATE 44100
 
 typedef struct {
     double real;
     double imaginary;
 } DFTResult;
-
-void dft(s16 *interleaved_samples, int number_of_buckets, int number_of_samples, DFTResult *output) {
-    for (int i = 0; i < number_of_buckets; i++) {
-        output[i].real = 0;
-        output[i].imaginary = 0;
-        double frequency = (double)i / (double)number_of_samples;
-        for (int n = 0; n < number_of_samples; n++) {
-            double value = (double)interleaved_samples[n*CHANNELS+0];
-            double angle = -2.0 * PI * n * frequency;
-            output[i].real += value * cos(angle);
-            output[i].imaginary += value * sin(angle);
-        }
-    }
-}
 
 // Cooley-Tukey
 void fft(s16 *interleaved_samples, int number_of_samples, DFTResult *output) {
@@ -113,94 +98,55 @@ void fft(s16 *interleaved_samples, int number_of_samples, DFTResult *output) {
 // for 1 second of audio, each bucket is 1hz, so we would need 20k buckets
 //
 
-#define NUMBER_OF_BUCKETS 200 // how many buckets of data we collect from the given samples
-#define SAMPLES 16384         // how many samples we analyze
-
-int main(void) {
+int main(int argc, char **argv) {
     InitAudioDevice();
     InitWindow(800, 1200, "Fourier");
+    SetWindowState(FLAG_VSYNC_HINT | FLAG_WINDOW_RESIZABLE);
 
-    s16 *interleaved_samples = malloc(CHANNELS*SAMPLES*sizeof(*interleaved_samples));
-    memset(interleaved_samples, 0, CHANNELS*SAMPLES*sizeof(*interleaved_samples));
-
-    double time = GetTime();
-
-#define ADD_FREQUENCY(f, p, a) { phase = p; for (int i = 0; i < SAMPLES; i++) { phase += 2.0f * PI * f / SAMPLE_RATE; interleaved_samples[i*CHANNELS+0] += (s16)(sinf(phase) * a); }}
-    float phase = 0;
-    ADD_FREQUENCY( 40, 0, 1000);
-    ADD_FREQUENCY( 80, 0, 2000);
-    ADD_FREQUENCY(120, 0, 3000);
-    ADD_FREQUENCY(160, 0, 4000);
-    ADD_FREQUENCY(200, 0, 5000);
-    ADD_FREQUENCY(240, 0, 6000);
-    ADD_FREQUENCY(280, 0, 1000);
-    ADD_FREQUENCY(320, 0, 2000);
-    ADD_FREQUENCY(360, 0, 3000);
-    ADD_FREQUENCY(400, 0, 4000);
-    ADD_FREQUENCY(440, 0, 5000);
-    ADD_FREQUENCY(480, 0, 6000);
-
-    printf("sample generation done in %f msec\n", (GetTime() - time)*1000.f);
-
-    int number_of_buckets = SAMPLES;
-
-    time = GetTime();
-    DFTResult *results = malloc(number_of_buckets*sizeof(*results));
-    dft(interleaved_samples, number_of_buckets, SAMPLES, results);
-    printf("dft done in %f usec\n", (GetTime() - time)*1000000.f);
-
-    time = GetTime();
-    DFTResult *results2 = malloc(number_of_buckets*sizeof(*results2));
-    fft(interleaved_samples, SAMPLES, results2);
-    printf("fft done in %f usec\n", (GetTime() - time)*1000000.f);
-
-    double epsilon = 1e-3 * (6000.0 * SAMPLES);
-    printf("Number of buckets: %d, epsilon: %f\n", number_of_buckets, epsilon);
-    for (int i = 0; i < number_of_buckets; i++) {
-        double diff_real      = fabs(results[i].real - results2[i].real);
-        double diff_imaginary = fabs(results[i].imaginary - results2[i].imaginary);
-
-        if (!(diff_real < epsilon && diff_imaginary < epsilon)) {
-            printf("failed to match [%d]: real: %f, imaginary: %f\n", i, diff_real, diff_imaginary);
-            printf("values1 = real: %f, imaginary: %f\n", results[i].real, results[i].imaginary);
-            printf("values2 = real: %f, imaginary: %f\n", results2[i].real, results2[i].imaginary);
-            exit(1);
-        }
+    if (argc == 1) {
+        printf("Specify path to the file to visualize.\n");
+        return 1;
     }
 
-    printf("Number of buckets: %d\n", NUMBER_OF_BUCKETS);
+    Wave wave = LoadWave(argv[1]);
+    if (wave.data == NULL) {
+        printf("Unable to load wave from file: '%s'.\n", argv[1]);
+        return 1;
+    }
 
-    Wave wave = {
-        .frameCount = SAMPLES,
-        .sampleRate = SAMPLE_RATE,
-        .sampleSize = 16,
-        .channels = CHANNELS,
-        .data = interleaved_samples,
-    };
-    char text[512];
-
+    WaveFormat(&wave, SAMPLE_RATE, 16, CHANNELS);
     Sound sound = LoadSoundFromWave(wave);
+    s16 *samples = (s16*)wave.data;
+
+    int number_of_samples = 8192; // also number of buckets
+    DFTResult *results = malloc(number_of_samples*sizeof(*results));
+
+    double start_time = GetTime();
     PlaySound(sound);
 
-    int scroll_offset = 0;
-
+    char text[512];
     while (!WindowShouldClose()) {
-        scroll_offset += GetMouseWheelMoveV().y * 2000;
+        double elapsed = GetTime() - start_time;
+        if (elapsed >= 0) {
+            int current_sample = (int)(elapsed * SAMPLE_RATE);
+            int offset = current_sample * CHANNELS;
+            fft(samples + offset, number_of_samples, results);
+        }
 
         BeginDrawing(); {
             ClearBackground(BLACK);
             DrawFPS(700, 10);
 
-            for (int i = 0; i < number_of_buckets/2; i++) {
+            sprintf(text, "%f seconds", elapsed);
+            DrawText(text, 10, 10, 18, WHITE);
+
+            // second half of buckets is mirror image (not to be used)
+            for (int i = 0; i < number_of_samples/2; i++) {
                 DFTResult result = results[i];
-                float amplitude = 2.0 * sqrt(result.real * result.real + result.imaginary * result.imaginary) / SAMPLES;
+                float amplitude = 2.0 * sqrt(result.real * result.real + result.imaginary * result.imaginary) / number_of_samples;
 
-                int y = i * 18 + scroll_offset;
-
-                sprintf(text, "%4d Hz", i*SAMPLE_RATE/SAMPLES);
-                DrawText(text, 10, y, 18, WHITE);
-
-                DrawRectangle(80, y, amplitude / 10, 18, RED);
+                float value = amplitude / 10;
+                DrawRectangle(i * 1, 1000 - value, 1, value, RED);
             }
         } EndDrawing();
     }
