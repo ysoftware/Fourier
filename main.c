@@ -3,17 +3,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <raylib.h>
+
 typedef signed short s16;
-#define PI 3.14159265358979323846
 #define PRINT_LINE 20
-#define BAR_LENGTH 200
 
 #define CHANNELS 2
 #define NUMBER_OF_BUCKETS (SAMPLES/2 + 1)
 
-#define AMPLITUDE 10000
 #define SAMPLE_RATE 8000
-
 
 typedef struct {
     double real;
@@ -56,13 +54,21 @@ int main(void) {
     DFTResult *results = malloc(NUMBER_OF_BUCKETS*sizeof(*results));
     dft(interleaved_samples, NUMBER_OF_BUCKETS, SAMPLES, results);
 
-    for (int i = 0; i*SAMPLE_RATE/SAMPLES < 500; i++) {
-        DFTResult result = results[i];
-        float amplitude = 2.0 * sqrt(result.real * result.real + result.imaginary * result.imaginary) / SAMPLES;
+    InitWindow(800, 1200, "Fourier");
 
-        printf("%4d Hz ", i*SAMPLE_RATE/SAMPLES);
-        for (int j = 0; j < amplitude / AMPLITUDE * BAR_LENGTH; j++) printf("#");
-        printf("\n");
+    char text[512];
+
+    while (!WindowShouldClose()) {
+        BeginDrawing(); {
+            for (int i = 0; i*SAMPLE_RATE/SAMPLES < 500; i++) {
+                DFTResult result = results[i];
+                float amplitude = 2.0 * sqrt(result.real * result.real + result.imaginary * result.imaginary) / SAMPLES;
+
+                sprintf(text, "%4d Hz", i*SAMPLE_RATE/SAMPLES);
+                DrawText(text, 10, i * 18, 18, WHITE);
+                DrawRectangle(80, i * 18, amplitude / 10, 18, RED);
+            }
+        } EndDrawing();
     }
 
     return 0;
