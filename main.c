@@ -12,9 +12,11 @@
 #define CHANNELS 2
 #define SAMPLE_RATE 44100
 
+#define WINDOW_SIZE 800
+
 int main(int argc, char **argv) {
     InitAudioDevice();
-    InitWindow(800, 800, "Fourier");
+    InitWindow(WINDOW_SIZE, WINDOW_SIZE, "Fourier");
     SetWindowState(FLAG_VSYNC_HINT);
 
     if (argc == 1) {
@@ -32,11 +34,16 @@ int main(int argc, char **argv) {
     Sound sound = LoadSoundFromWave(wave);
     signed short *samples = (signed short*)wave.data;
 
-    int number_of_samples = 8192; // also number of buckets
-    FFTValue *results = malloc(number_of_samples*sizeof(*results));
-
     double start_time = GetTime();
     PlaySound(sound);
+
+    // fft settings
+
+    int number_of_samples = 2048;  // also number of buckets
+    float frequencies_scale = 1.8; // increase resolution of lower frequencies
+    float window_alpha = 0.5;      // smooth out samples at edges of each batch to reduce noise
+
+    FFTValue *results = malloc(number_of_samples*sizeof(*results));
 
     char text[512];
     while (!WindowShouldClose()) {
@@ -45,22 +52,28 @@ int main(int argc, char **argv) {
         int offset = current_sample * CHANNELS;
 
         if (current_sample + number_of_samples > wave.frameCount) break;
-        fft_process(results, number_of_samples, CHANNELS, &samples[offset]);
 
-        int number_of_bars = 100;
-        int padding = 10;
-        int size = 780;
+        fft_process(results, number_of_samples, CHANNELS, &samples[offset], window_alpha);
 
         BeginDrawing(); {
             ClearBackground(BLACK);
 
+            int number_of_bars = 30;
+            int padding = 10;
+            int spacing = 5;
+
+            int bar_width = (WINDOW_SIZE - spacing*(number_of_bars-1) - padding*2) / number_of_bars;
+            int max_bar_height = WINDOW_SIZE - padding*2;
+
             for (int i = 0; i < number_of_bars; i++) {
-                float value = fft_get_bar_value(results, number_of_samples, i, number_of_bars, true);
+                float value = fft_get_bar_value(results, number_of_samples, i, number_of_bars, frequencies_scale);
+                value = fmin(max_bar_height, fmax(1, value));
+
                 Rectangle frame = {
-                    .x = padding + i * ((float)size / number_of_bars),
-                    .y = padding + size - fmin(size, fmax(1, value)),
-                    .width = ((float)size / number_of_bars),
-                    .height = fmin(size, fmax(1, value))
+                    .x = padding + bar_width*i + fmax(0, spacing*(i-1)),
+                    .y = padding + max_bar_height/2 - value/2,
+                    .width = bar_width,
+                    .height = value + 2,
                 };
                 DrawRectangleRec(frame, RED);
             }

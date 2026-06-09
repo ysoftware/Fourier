@@ -10,17 +10,30 @@ typedef struct {
     double imaginary;
 } FFTValue;
 
-// Using Cooley-Tukey fast Fourier transform algorithm, process given samples and write the data into results buffer.
-//
-// Buffer must be at least of size number_of_samples*sizeof(*results).
-void fft_process(FFTValue *results, int number_of_samples, int channels, signed short *interleaved_samples);
+/// Using Cooley-Tukey fast Fourier transform algorithm, process given samples and write the data into results buffer.
+///
+/// Buffer must be at least of size number_of_samples*sizeof(*results).
+/// Only the first channel #0 is used for calculations currently.
+///
+/// Argument window_alpha defines the amount of window tapering applied to samples at edges to improve frequency resolution.
+/// 0.0 - no adjustments to samples 
+/// 1.0 - full Hann window
+/// value is clamped between 0 and 1
+void fft_process(FFTValue *results, int number_of_samples, int channels, signed short *interleaved_samples, double window_alpha);
 
 /// Supports logarithmic scaling of the frequencies (represent lower frequencies in mode definition than higher).
 ///
 /// Frequency of each bucket depends on the number of samples analyzed,
-/// so for 1 second of audio, each bucket is 1hz, so we would need 20k buckets.
-/// This basically makes number_of_samples the same as number_of_buckets.
-double fft_get_bar_value(FFTValue *results, int number_of_samples, int bar, int number_of_bars, bool is_logarithmic);
+///     so for 1 second of audio, each bucket is 1hz, so we would need 20k buckets.
+///     This basically makes number_of_samples the same as number_of_buckets.
+///
+/// Argument scale affects how the frequencies are scaled logarithmically.
+/// Higher values increase resolution of lower frequencies and squish higher frequencies, immitating human hearing.
+/// Recommended value is between 0.25 and 0.75.
+///   ~0  - all samples will be scaled down completely
+///   1.0 - no scaling applied
+///   less than 0.0, default is applied (2.0)
+double fft_get_bar_value(FFTValue *results, int number_of_samples, int bar, int number_of_bars, double scale);
 
 #endif // FFT_H_
 
@@ -32,12 +45,23 @@ double fft_get_bar_value(FFTValue *results, int number_of_samples, int bar, int 
 
 #define FFT_PI 3.14159265358979323846
 
-void fft_process(FFTValue *results, int number_of_samples, int channels, signed short *interleaved_samples) {
+void fft_process(FFTValue *results, int number_of_samples, int channels, signed short *interleaved_samples, double window_alpha) {
     assert((number_of_samples & (number_of_samples - 1)) == 0 && "number_of_samples must be a power of 2.");
 
-    // copy samples into results buffer as real values, imaginary = 0
+    if (window_alpha < 0.0) window_alpha = 0;
+    if (window_alpha > 1.0) window_alpha = 1;
+
+    // copy samples into results buffer as real values (imaginary = 0) and apply window alpha
+    int taper_len = (int)(window_alpha * number_of_samples / 2);
     for (int i = 0; i < number_of_samples; i++) {
-        results[i].real = (double)interleaved_samples[i * channels + 0];
+        double w = 1.0;
+        if (i < taper_len) {
+            w = 0.5 * (1.0 - cos(M_PI * i / taper_len));
+        } else if (i >= number_of_samples - taper_len) {
+            w = 0.5 * (1.0 - cos(M_PI * (number_of_samples - 1 - i) / taper_len));
+        }
+
+        results[i].real = (double)interleaved_samples[i * channels + 0] * w;
         results[i].imaginary = 0.0;
     }
 
@@ -109,9 +133,10 @@ void fft_process(FFTValue *results, int number_of_samples, int channels, signed 
     }
 }
 
-/// Supports logarithmic scaling of the frequencies (represent lower frequencies in mode definition than higher).
-double fft_get_bar_value(FFTValue *results, int number_of_samples, int bar, int number_of_bars, bool is_logarithmic) {
-    // second half of buckets is mirror image (not to be used)
+double fft_get_bar_value(FFTValue *results, int number_of_samples, int bar, int number_of_bars, double scale) {
+    if (scale <= 0) scale = 2.0; // default value of scale
+
+    // second half of buckets is mirror image is not to be used
     int valid_buckets = number_of_samples/2;
 
     assert(number_of_bars < valid_buckets/2);
@@ -121,17 +146,12 @@ double fft_get_bar_value(FFTValue *results, int number_of_samples, int bar, int 
     double value = 0;
 
     int start, end;
-    if (is_logarithmic) {
-        start = (int)(valid_buckets * pow((double)bar / number_of_bars, 2.0));
-        end = (int)(valid_buckets * pow((double)(bar + 1) / number_of_bars, 2.0));
-    } else {
-        start = accumulate_bars * bar;
-        end = start + accumulate_bars;
-    }
+    start = (int)(valid_buckets * pow((double)bar / number_of_bars, scale));
+    end = (int)(valid_buckets * pow((double)(bar + 1) / number_of_bars, scale));
 
     for (int i = start; i < end; ++i) {
         FFTValue result = results[i];
-        float amplitude = 2.0 * sqrt(result.real * result.real + result.imaginary * result.imaginary) / number_of_samples;
+        double amplitude = 2.0 * sqrt(result.real * result.real + result.imaginary * result.imaginary) / number_of_samples;
         value += amplitude;
     }
 
