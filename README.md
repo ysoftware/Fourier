@@ -25,3 +25,5 @@ int main(void) {
 $ make
 $ ./main Naraka.mp3
 ```
+
+<img width="300" height="300" alt="Screenshot" src="https://github.com/user-attachments/assets/d6cbfbbd-f173-4e3c-abf8-1534150af7ea" />
